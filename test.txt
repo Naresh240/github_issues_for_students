@@ -1,0 +1,6 @@
+aws logs put-metric-filter \
+  --log-group-name "<your-log-group-name>" \
+  --filter-name "INFO-MetricFilter" \
+  --filter-pattern "INFO" \
+  --metric-transformations \
+      metricName="INFO-UCC-DM",metricNamespace="UccDm/Metrics",metricValue=1
