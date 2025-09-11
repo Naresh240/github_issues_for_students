@@ -1,6 +1,6 @@
-aws logs put-metric-filter \
-    --log-group-name YourLogGroupName \
-    --filter-name InfoCountFilter \
-    --filter-pattern "{ $.message = \"*INFO*\" }" \
-    --metric-transformations \
-        metricName=InfoCount,metricNamespace=YourNamespace,metricValue=1,defaultValue=0
+MSYS_NO_PATHCONV=1 aws logs put-metric-filter \
+  --log-group-name "/aws/eks/fluentbit-logs" \
+  --filter-name "UccDmInfo" \
+  --filter-pattern "INFO" \
+  --metric-transformations \
+      metricName="UccDmInfo",metricNamespace="UccDmInfo",metricValue=1
