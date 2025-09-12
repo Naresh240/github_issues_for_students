@@ -1,4 +1,1 @@
-aws logs filter-log-events \
-  --log-group-name "/ucc/eks/dm-campaign-process-manager/dev" \
-  --filter-pattern "INFO" \
-  --limit 20
+aws logs filter-log-events --log-group-name "/ucc/eks/dm-campaign-process-manager/dev" --filter-pattern "INFO" --limit 20
