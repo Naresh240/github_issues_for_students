@@ -1,3 +1,5 @@
 aws logs filter-log-events --log-group-name "/ucc/eks/dm-campaign-process-manager/dev" --filter-pattern "INFO" --limit 20
 
 aws logs put-metric-filter --log-group-name "/ucc/eks/dm-campaign-process-manager/dev" --filter-name "InfoLogFilter" --filter-pattern "INFO" --metric-transformations "metricName=InfoLogCount,metricNamespace=UccDmApp,metricValue=1"
+
+aws logs describe-metric-filters --log-group-name "/ucc/eks/dm-campaign-process-manager/dev"
