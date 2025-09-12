@@ -1,6 +1,4 @@
-MSYS_NO_PATHCONV=1 aws logs put-metric-filter \
-  --log-group-name "/aws/eks/fluentbit-logs" \
-  --filter-name "UccDmInfo" \
+aws logs filter-log-events \
+  --log-group-name "/ucc/eks/dm-campaign-process-manager/dev" \
   --filter-pattern "INFO" \
-  --metric-transformations \
-      metricName="UccDmInfo",metricNamespace="UccDmInfo",metricValue=1
+  --limit 20
