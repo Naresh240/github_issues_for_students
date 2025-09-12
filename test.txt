@@ -3,3 +3,6 @@ aws logs filter-log-events --log-group-name "/ucc/eks/dm-campaign-process-manage
 aws logs put-metric-filter --log-group-name "/ucc/eks/dm-campaign-process-manager/dev" --filter-name "InfoLogFilter" --filter-pattern "INFO" --metric-transformations "metricName=InfoLogCount,metricNamespace=UccDmApp,metricValue=1"
 
 aws logs describe-metric-filters --log-group-name "/ucc/eks/dm-campaign-process-manager/dev"
+
+aws cloudwatch put-metric-alarm --alarm-name "InfoLogAlarm" --alarm-description "Alarm when INFO logs appear in dm-campaign-process-manager" --metric-name "InfoLogCount" --namespace "UccDmApp" --statistic Sum --period 60 --threshold 0 --comparison-operator GreaterThanThreshold --evaluation-periods 1 --treat-missing-data notBreaching --alarm-actions test-sns-topic
+
