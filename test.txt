@@ -12,3 +12,21 @@ print(f"response_file value: {response_fle}")
 
             pod_name = msg.get("kubernetes", {}).get("containerName") or msg.get("containerName") or msg.get("pod") or "N/A"
             namespace = msg.get("kubernetes", {}).get("containerNamespace") or msg.get("containerNamespace") or msg.get("namespace") or "N/A"
+
+
+try:
+    msg = json.loads(raw_message)
+    if isinstance(msg, str):
+        msg = json.loads(msg)
+
+    pod_name = msg.get("containerName") or msg.get("pod") or "N/A"
+    namespace = msg.get("containerNamespace") or msg.get("namespace") or "N/A"
+
+except Exception:
+    msg = raw_message
+    pod_match = re.search(r'containerName[=: ]+([\w-]+)', raw_message)
+    ns_match = re.search(r'containerNamespace[=: ]+([\w-]+)', raw_message)
+    if pod_match:
+        pod_name = pod_match.group(1)
+    if ns_match:
+        namespace = ns_match.group(1)
