@@ -9,3 +9,6 @@ aws cloudwatch put-metric-alarm --alarm-name "InfoLogAlarm" --alarm-description 
 print(f"response metric filters: {response['metricFilters']}")
 
 print(f"response_file value: {response_fle}")
+
+            pod_name = msg.get("kubernetes", {}).get("containerName") or msg.get("containerName") or msg.get("pod") or "N/A"
+            namespace = msg.get("kubernetes", {}).get("containerNamespace") or msg.get("containerNamespace") or msg.get("namespace") or "N/A"
