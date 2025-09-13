@@ -14,18 +14,32 @@ print(f"response_file value: {response_fle}")
             namespace = msg.get("kubernetes", {}).get("containerNamespace") or msg.get("containerNamespace") or msg.get("namespace") or "N/A"
 
 
+    for event in events:
+        log_stream_name = event['logStreamName']
+        raw_message = event['message']
+        pod_name, namespace = "N/A", "N/A"
 try:
     msg = json.loads(raw_message)
-    if isinstance(msg, str):
-        msg = json.loads(msg)
 
-    pod_name = msg.get("containerName") or msg.get("pod") or "N/A"
-    namespace = msg.get("containerNamespace") or msg.get("namespace") or "N/A"
+    pod_name = (
+        msg.get("kubernetes", {}).get("containerName")
+        or msg.get("containerName")
+        or msg.get("env", {}).get("containerName")
+        or msg.get("pod")
+        or "N/A"
+    )
 
+    namespace = (
+        msg.get("kubernetes", {}).get("containerNamespace")
+        or msg.get("containerNamespace")
+        or msg.get("env", {}).get("containerNamespace")
+        or msg.get("namespace")
+        or "N/A"
+    )
 except Exception:
     msg = raw_message
-    pod_match = re.search(r'containerName[=: ]+([\w-]+)', raw_message)
-    ns_match = re.search(r'containerNamespace[=: ]+([\w-]+)', raw_message)
+    pod_match = re.search(r'pod[=: ]+([\w-]+)', raw_message)
+    ns_match = re.search(r'namespace[=: ]+([\w-]+)', raw_message)
     if pod_match:
         pod_name = pod_match.group(1)
     if ns_match:
