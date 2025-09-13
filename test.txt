@@ -6,37 +6,4 @@ aws logs describe-metric-filters --log-group-name "/ucc/eks/dm-campaign-process-
 
 aws cloudwatch put-metric-alarm --alarm-name "InfoLogAlarm" --alarm-description "Alarm when INFO logs appear in dm-campaign-process-manager" --metric-name "InfoLogCount" --namespace "UccDmApp" --statistic Sum --period 60 --threshold 0 --comparison-operator GreaterThanThreshold --evaluation-periods 1 --treat-missing-data notBreaching --alarm-actions test-sns-topic
 
-print(f"response metric filters: {response['metricFilters']}")
-
-print(f"response_file value: {response_fle}")
-
-            pod_name = msg.get("kubernetes", {}).get("containerName") or msg.get("containerName") or msg.get("pod") or "N/A"
-            namespace = msg.get("kubernetes", {}).get("containerNamespace") or msg.get("containerNamespace") or msg.get("namespace") or "N/A"
-
-def api_call(namespace, pod_name):
-    API_TOKEN = get_api_token(secret_name)
-    if not API_TOKEN:
-        print("API token not available, skipping API call.")
-        return
-
-    url = "https://E9B5394C935D1C475D717A30982604A1.gr7.us-east-1.eks.amazonaws.com/k8s-utils/v1/pods/delete"
-    
-    # Adjust keys based on common API spec
-    request_data = {
-        "namespace": namespace,
-        "pod_name": pod_name   # <-- changed from podName
-    }
-
-    json_data = json.dumps(request_data).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {API_TOKEN}"
-    }
-
-    req = urls.Request(url, data=json_data, headers=headers, method="POST")
-
-    try:
-        with urls.urlopen(req) as response:
-            print(f"Success: status={response.getcode()}, response={response.read().decode('utf8')}")
-    except Exception as e:
-        print(f"Error: {e}")
+from urllib import request as urls
