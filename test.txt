@@ -7,3 +7,5 @@ aws logs describe-metric-filters --log-group-name "/ucc/eks/dm-campaign-process-
 aws cloudwatch put-metric-alarm --alarm-name "InfoLogAlarm" --alarm-description "Alarm when INFO logs appear in dm-campaign-process-manager" --metric-name "InfoLogCount" --namespace "UccDmApp" --statistic Sum --period 60 --threshold 0 --comparison-operator GreaterThanThreshold --evaluation-periods 1 --treat-missing-data notBreaching --alarm-actions test-sns-topic
 
 print(f"response metric filters: {response['metricFilters']}")
+
+print(f"response_file value: {response_fle}")
