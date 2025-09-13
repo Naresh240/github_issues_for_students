@@ -13,34 +13,30 @@ print(f"response_file value: {response_fle}")
             pod_name = msg.get("kubernetes", {}).get("containerName") or msg.get("containerName") or msg.get("pod") or "N/A"
             namespace = msg.get("kubernetes", {}).get("containerNamespace") or msg.get("containerNamespace") or msg.get("namespace") or "N/A"
 
+def api_call(namespace, pod_name):
+    API_TOKEN = get_api_token(secret_name)
+    if not API_TOKEN:
+        print("API token not available, skipping API call.")
+        return
 
-    for event in events:
-        log_stream_name = event['logStreamName']
-        raw_message = event['message']
-        pod_name, namespace = "N/A", "N/A"
-try:
-    msg = json.loads(raw_message)
+    url = "https://E9B5394C935D1C475D717A30982604A1.gr7.us-east-1.eks.amazonaws.com/k8s-utils/v1/pods/delete"
+    
+    # Adjust keys based on common API spec
+    request_data = {
+        "namespace": namespace,
+        "pod_name": pod_name   # <-- changed from podName
+    }
 
-    pod_name = (
-        msg.get("kubernetes", {}).get("containerName")
-        or msg.get("containerName")
-        or msg.get("env", {}).get("containerName")
-        or msg.get("pod")
-        or "N/A"
-    )
+    json_data = json.dumps(request_data).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {API_TOKEN}"
+    }
 
-    namespace = (
-        msg.get("kubernetes", {}).get("containerNamespace")
-        or msg.get("containerNamespace")
-        or msg.get("env", {}).get("containerNamespace")
-        or msg.get("namespace")
-        or "N/A"
-    )
-except Exception:
-    msg = raw_message
-    pod_match = re.search(r'pod[=: ]+([\w-]+)', raw_message)
-    ns_match = re.search(r'namespace[=: ]+([\w-]+)', raw_message)
-    if pod_match:
-        pod_name = pod_match.group(1)
-    if ns_match:
-        namespace = ns_match.group(1)
+    req = urls.Request(url, data=json_data, headers=headers, method="POST")
+
+    try:
+        with urls.urlopen(req) as response:
+            print(f"Success: status={response.getcode()}, response={response.read().decode('utf8')}")
+    except Exception as e:
+        print(f"Error: {e}")
