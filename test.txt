@@ -6,4 +6,7 @@ aws logs describe-metric-filters --log-group-name "/ucc/eks/dm-campaign-process-
 
 aws cloudwatch put-metric-alarm --alarm-name "InfoLogAlarm" --alarm-description "Alarm when INFO logs appear in dm-campaign-process-manager" --metric-name "InfoLogCount" --namespace "UccDmApp" --statistic Sum --period 60 --threshold 0 --comparison-operator GreaterThanThreshold --evaluation-periods 1 --treat-missing-data notBreaching --alarm-actions test-sns-topic
 
+metric_name = message['Trigger']['Metric']['MetricName']
+namespace = message['Trigger']['Metric']['Namespace']
+
 html += f"<pre><b>Metric Name:</b> <a href='https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#metricsV2:graph=~(metrics~(~(~'{namespace}'~'{metric_name}')))'>{metric_name}</a></pre>"
