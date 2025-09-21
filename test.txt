@@ -7,12 +7,27 @@ aws logs describe-metric-filters --log-group-name "/ucc/eks/dm-campaign-process-
 aws cloudwatch put-metric-alarm --alarm-name "InfoLogAlarm" --alarm-description "Alarm when INFO logs appear in dm-campaign-process-manager" --metric-name "InfoLogCount" --namespace "UccDmApp" --statistic Sum --period 60 --threshold 0 --comparison-operator GreaterThanThreshold --evaluation-periods 1 --treat-missing-data notBreaching --alarm-actions test-sns-topic
 
 
-raw_message = event['Records'][0]['Sns']['Message']
-message = None
-try:
-    message = json.loads(raw_message)
-except Exception as e:
-    print(f"Failed to parse Message as JSON: {e}")
-    message = {"RawMessage": raw_message}
+# ---------------------------
+# Upload to S3 and return link
+# ---------------------------
+def get_s3_download_link(response_log_events):
+    
+    length_events = len(response_log_events)
+    with open("/tmp/logs.txt", "w+") as a_file:
+        for log_event in range(length_events):
+            a_file.write(
+                "%s\n" % response_log_events[log_event]['message'])
+
+    with open("/tmp/logs.txt", 'rb') as orig_file:
+        with gzip.open("/tmp/logs.gz", 'wb') as zipped_file:
+            zipped_file.writelines(orig_file)
+
+    file_name = str(uuid.uuid4()) + '.gz'
+    log_file_name = "prod/" + file_name
+    result = s3_client.upload_file(
+        '/tmp/logs.gz', 'ucchub2-app-logs', log_file_name)
+    print("Log file uploaded successfully to S3: {}".format(log_file_name))
+
+    return "https://lo1v82nhf5.execute-api.us-east-1.amazonaws.com/cw/v1/download/" + file_name
 
 
