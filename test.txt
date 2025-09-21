@@ -6,7 +6,19 @@ aws logs describe-metric-filters --log-group-name "/ucc/eks/dm-campaign-process-
 
 aws cloudwatch put-metric-alarm --alarm-name "InfoLogAlarm" --alarm-description "Alarm when INFO logs appear in dm-campaign-process-manager" --metric-name "InfoLogCount" --namespace "UccDmApp" --statistic Sum --period 60 --threshold 0 --comparison-operator GreaterThanThreshold --evaluation-periods 1 --treat-missing-data notBreaching --alarm-actions test-sns-topic
 
-metric_name = message['Trigger']['Metric']['MetricName']
-namespace = message['Trigger']['Metric']['Namespace']
+    request_data = {
+        "gracePeriodSeconds": 0
+    }
+    json_data = json.dumps(request_data).encode("utf-8")
 
-html += f"<pre><b>Metric Name:</b> <a href='https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#metricsV2:graph=~(metrics~(~(~'{namespace}'~'{metric_name}')))'>{metric_name}</a></pre>"
+    # SSL context (disable verify if needed)
+    ctx = ssl.create_default_context()
+    if not verify_ssl:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+    req = urllib.request.Request(url, data=json_data, headers=headers, method="DELETE")
+
+    try:
+        with urllib.request.urlopen(req, context=ctx) as response:
+            status_code = response.getcode()
