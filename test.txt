@@ -15,6 +15,4 @@ except Exception as e:
     print(f"Failed to parse Message as JSON: {e}")
     message = {"RawMessage": raw_message}
 
-    send_email(subject, text)
-    print("Email Sent.")
 
