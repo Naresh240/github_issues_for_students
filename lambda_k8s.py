@@ -3,11 +3,9 @@ import json
 from datetime import datetime, timedelta
 import boto3
 from botocore.exceptions import ClientError
-import uuid
-import gzip
 import urllib.request
 import urllib.error
-import html
+import re
 
 # ---------------------------
 # AWS Clients
@@ -25,12 +23,7 @@ email_dist_list = os.environ['email_dist_list'].split(",")
 source_email = os.environ['source_email_address']
 application_error_metric_ns = os.environ['application_error_metric_namespace'].split(",")
 env = os.environ["environment"]
-is_container_restart_enabled = os.environ["is_container_restart_enabled"]
-container_restart_log_stmts = os.environ["log_stmt_for_container_restart"]
-container_restart_log_stmts_count = os.environ["log_stmt_for_container_restart_max_count"]
 container_restart_approved_alarm_names = os.environ["container_restart_approved_alarm_names"]
-high_priority_log_stmts = os.environ["high_priority_log_stmts"]
-high_priority_prefix_text = os.environ["high_priority_prefix"]
 secret_name = os.environ["secret_name"]
 
 log_stream = None
@@ -286,9 +279,25 @@ def prepare_email_content_for_error_logs(response, message, log_group_name):
         raw_message = event['message']
         pod_name, namespace = "N/A", "N/A"
 
-        msg = json.loads(raw_message)
-        pod_name = msg.get("containerName")
-        namespace = msg.get("containerNamespace")
+        try:
+            msg = json.loads(raw_message)
+            pod_name = (
+                msg.get("kubernetes", {}).get("containerName")
+                or msg.get("containerName")
+            )
+            namespace = (
+                msg.get("kubernetes", {}).get("containerNamespace")
+                or msg.get("containerNamespace")
+            )
+            print(f"pod_name: {pod_name}, namespace: {namespace}")
+        except Exception:
+            msg = raw_message
+            pod_match = re.search(r'pod[=: ]+([\w-]+)', raw_message)
+            ns_match = re.search(r'namespace[=: ]+([\w-]+)', raw_message)
+            if pod_match:
+                pod_name = pod_match.group(1)
+            if ns_match:
+                namespace = ns_match.group(1)
 
         print("Pod Name is: " + pod_name + "Namespace is: " + namespace )
 
@@ -309,28 +318,6 @@ def prepare_email_content_for_error_logs(response, message, log_group_name):
     # Send mail with both alarm details and limited log events
     text = alarm_table_html + log_data
     send_email(subject, text)
-
-# ---------------------------
-# Check Log Events for Restart/High Priority
-# ---------------------------
-def check_events_for_los_stmts(events):
-    high_priority = False
-    container_restart_events = []
-    log_stmts = container_restart_log_stmts.split('|')
-    high_priority_stmts = high_priority_log_stmts.split('|')
-
-    for event in events:
-        try:
-            msg = json.loads(event['message'])
-        except json.JSONDecodeError:
-            msg = {"logMessage": event['message']}
-
-        if any(s in msg.get('logMessage','') for s in log_stmts):
-            container_restart_events.append(msg)
-        if any(s in msg.get('logMessage','') for s in high_priority_stmts):
-            high_priority = True
-
-    return high_priority, container_restart_events
 
 # ---------------------------
 # Restart EKS Deployments
