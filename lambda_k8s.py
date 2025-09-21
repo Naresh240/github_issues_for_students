@@ -145,6 +145,7 @@ def process_metric_data_for_error_logs(message, response):
         endTime=end_ms,
         filterPattern=filter_pattern
     )
+    print("Log Events: ", response_fle)
     if response_fle['events']:
         prepare_email_content_for_error_logs(response_fle, message, log_group_name)
     else:
@@ -300,10 +301,16 @@ def prepare_email_content_for_error_logs(response, message, log_group_name):
 
     for i, event in enumerate(events):
         log_stream_name = event['logStreamName']
-        msg = json.loads(event['message'])
+        try:
+            msg = json.loads(event['message'])
+            pretty_msg = json.dumps(msg, indent=4)
+        except json.JSONDecodeError:
+            # fallback if it's plain text log line
+            pretty_msg = event['message']
+
         log_data += f'<pre><b>Log Group</b>: <a href="{console_url}/log-events/{log_stream_name}">{log_group_name}</a></pre>'
         log_data += f'<pre><b>Log Stream:</b> {log_stream_name}</pre>'
-        log_data += f'<pre><b>Log Event:</b><br/>{json.dumps(msg, indent=4)}</pre><br/>'
+        log_data += f'<pre><b>Log Event:</b><br/>{pretty_msg}</pre><br/>'
 
     # Download log option
     if os.environ['download_log_option'].lower() == "true":
@@ -363,12 +370,13 @@ def check_events_for_los_stmts(events):
     for event in events:
         try:
             msg = json.loads(event['message'])
-            if any(s in msg.get('logMessage','') for s in log_stmts):
-                container_restart_events.append(msg)
-            if any(s in msg.get('logMessage','') for s in high_priority_stmts):
-                high_priority = True
-        except Exception as e:
-            print(f"Error parsing log event: {e}")
+        except json.JSONDecodeError:
+            msg = {"logMessage": event['message']}
+
+        if any(s in msg.get('logMessage','') for s in log_stmts):
+            container_restart_events.append(msg)
+        if any(s in msg.get('logMessage','') for s in high_priority_stmts):
+            high_priority = True
 
     return high_priority, container_restart_events
 
