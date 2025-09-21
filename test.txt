@@ -7,39 +7,33 @@ aws logs describe-metric-filters --log-group-name "/ucc/eks/dm-campaign-process-
 aws cloudwatch put-metric-alarm --alarm-name "InfoLogAlarm" --alarm-description "Alarm when INFO logs appear in dm-campaign-process-manager" --metric-name "InfoLogCount" --namespace "UccDmApp" --statistic Sum --period 60 --threshold 0 --comparison-operator GreaterThanThreshold --evaluation-periods 1 --treat-missing-data notBreaching --alarm-actions test-sns-topic
 
 
-def get_consolidate_log_events(log_group_name, events):
-    try:
-        first_event = json.loads(events[0]['message'])
-        ts_first_event_obj = datetime.strptime(first_event['ts'], '%Y-%m-%dT%H:%M:%S.%f%z')
-    except (json.JSONDecodeError, KeyError):
-        # fallback: use event timestamp if not JSON
-        ts_first_event_obj = datetime.fromtimestamp(events[0]['timestamp'] / 1000.0)
+def prepare_email_content_for_error_logs(response, message, log_group_name):
+    events = response['events']
+    subject = f"Details for Alarm - {message['AlarmName']}"
+    alarm_table_html = get_alarm_table(message)
 
-    try:
-        last_event = json.loads(events[-1]['message'])
-        ts_last_event_obj = datetime.strptime(last_event['ts'], '%Y-%m-%dT%H:%M:%S.%f%z')
-    except (json.JSONDecodeError, KeyError):
-        ts_last_event_obj = datetime.fromtimestamp(events[-1]['timestamp'] / 1000.0)
+    console_url = f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#logsV2:log-groups/log-group/{log_group_name.replace('/', '$252F')}"
 
-    unique_log_streams = list(set([e['logStreamName'] for e in events]))
+    style = "<style> pre {color: red;font-family: arial, sans-serif;font-size: 11px;} </style>"
+    log_data = '<br/><b><u>Log Details (Consolidated):</u></b><br/><br/>' + style
 
-    params = {
-        'logGroupName': log_group_name,
-        'logStreamNames': unique_log_streams,
-        'startTime': int(ts_first_event_obj.timestamp() * 1000),
-        'endTime': int(ts_last_event_obj.timestamp() * 1000)
-    }
+    # collect all messages together
+    consolidated_logs = []
+    for event in events:
+        try:
+            msg = json.loads(event['message'])
+            consolidated_logs.append(msg)
+        except json.JSONDecodeError:
+            consolidated_logs.append(event['message'])
 
-    consolidated_log_events = []
-    counter = 0
-    while True:
-        response = cloudwatch_logs.filter_log_events(**params)
-        counter += 1
-        consolidated_log_events.extend(response['events'])
+    # pretty-print as one block
+    pretty_logs = json.dumps(consolidated_logs, indent=4, ensure_ascii=False)
+    log_data += f'<pre>{html.escape(pretty_logs)}</pre>'
 
-        next_token = response.get('nextToken')
-        if not next_token or counter > 10:  # safety guard
-            break
-        params['nextToken'] = next_token
+    # Final email body
+    text = alarm_table_html + log_data
+    text += f"<br><br><u><b>Source Identifier:</b></u> {log_stream}"
 
-    return consolidated_log_events
+    send_email(subject, text)
+    print("Email Sent.")
+
