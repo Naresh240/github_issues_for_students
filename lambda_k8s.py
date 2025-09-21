@@ -189,30 +189,97 @@ def prepare_email_content(message, data):
     return html
 
 # ---------------------------
-# Generate S3 Download Link
+# Get Log Events (K8s)
 # ---------------------------
-def get_s3_download_link(log_events):
-    try:
-        key = f"logs/{uuid.uuid4()}.json.gz"
-        compressed = gzip.compress(json.dumps(log_events).encode("utf-8"))
-        
-        s3_client.put_object(
-            Bucket=os.environ['s3_bucket_name'],
-            Key=key,
-            Body=compressed,
-            ContentType="application/json",
-            ContentEncoding="gzip"
+def get_log_events(log_event_message, log_group_name, pod_name, container_name):
+    log_ts_obj = datetime.strptime(log_event_message['ts'], '%Y-%m-%dT%H:%M:%S.%f%z')
+
+    log_stream_name = f"{pod_name}/{container_name}"
+
+    if 'traceId' in log_event_message:
+        print(f"The event contains traceId, filtering events based on: {log_event_message['traceId']}")
+        filter_pattern = '{$.traceId = "' + log_event_message['traceId'] + '"}'
+        log_start_time = log_ts_obj - timedelta(seconds=60)
+        log_end_time = log_ts_obj + timedelta(seconds=60)
+
+        response_log_events = cloudwatch_logs.filter_log_events(
+            logGroupName=log_group_name,
+            startTime=int(log_start_time.timestamp() * 1000),
+            endTime=int(log_end_time.timestamp() * 1000),
+            filterPattern=filter_pattern
+        )
+    else:
+        print("The event doesn't contain traceId, fetching all log events based on time")
+        log_start_time = log_ts_obj - timedelta(seconds=4)
+        log_end_time = log_ts_obj + timedelta(seconds=1)
+
+        response_log_events = cloudwatch_logs.get_log_events(
+            logGroupName=log_group_name,
+            logStreamName=log_stream_name,
+            startTime=int(log_start_time.timestamp() * 1000),
+            endTime=int(log_end_time.timestamp() * 1000)
         )
 
-        # Presigned URL (valid for 1 hour)
-        url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': os.environ['s3_bucket_name'], 'Key': key},
-            ExpiresIn=3600
-        )
-        return url
+    return response_log_events
+
+# ---------------------------
+# Consolidate Logs for multiple pods
+# ---------------------------
+def get_consolidate_log_events(log_group_name, events):
+    first_event = json.loads(events[0]['message'])
+    last_event = json.loads(events[-1]['message'])
+
+    ts_first_event_obj = datetime.strptime(first_event['ts'], '%Y-%m-%dT%H:%M:%S.%f%z')
+    ts_last_event_obj = datetime.strptime(last_event['ts'], '%Y-%m-%dT%H:%M:%S.%f%z')
+
+    unique_log_streams = list(set([e['logStreamName'] for e in events]))
+
+    params = {
+        'logGroupName': log_group_name,
+        'logStreamNames': unique_log_streams,
+        'startTime': int(ts_first_event_obj.timestamp() * 1000),
+        'endTime': int(ts_last_event_obj.timestamp() * 1000)
+    }
+
+    consolidated_log_events = []
+    counter = 0
+    while True:
+        response = cloudwatch_logs.filter_log_events(**params)
+        counter += 1
+        consolidated_log_events.extend(response['events'])
+
+        next_token = response.get('nextToken')
+        if not next_token or counter > 10:  # safety guard
+            break
+        params['nextToken'] = next_token
+
+    return consolidated_log_events
+
+# ---------------------------
+# Upload to S3 and return link
+# ---------------------------
+def get_s3_download_link(response_log_events):
+    try:
+        temp_txt_file = "/tmp/logs.txt"
+        temp_gz_file = "/tmp/logs.gz"
+
+        with open(temp_txt_file, "w+") as f:
+            for log_event in response_log_events:
+                f.write(f"{log_event['message']}\n")
+
+        with open(temp_txt_file, 'rb') as orig_file:
+            with gzip.open(temp_gz_file, 'wb') as gz_file:
+                gz_file.writelines(orig_file)
+
+        file_name = f"{uuid.uuid4()}.gz"
+        log_file_name = f"{os.environ.get('env', 'prod')}/{file_name}"
+        s3_client.upload_file(temp_gz_file, os.environ['s3_bucket_name'], log_file_name)
+
+        print(f"Log file uploaded successfully to S3: {log_file_name}")
+        return f"https://lo1v82nhf5.execute-api.us-east-1.amazonaws.com/cw/v1/download/{file_name}"
+
     except Exception as e:
-        print(f"Error generating S3 download link: {e}")
+        print(f"Error in get_s3_download_link: {e}")
         return None
 
 # ---------------------------
@@ -241,17 +308,18 @@ def prepare_email_content_for_error_logs(response, message, log_group_name):
     # Download log option
     if os.environ['download_log_option'].lower() == "true":
         if length > 5:
-            print(
-                "Number of matched events: {} are more than 5, sending consolidated logs in email.".format(length))
-            consolidated_logs = get_consolidate_log_events(
-                log_group_name, events)
+            print("Number of matched events: {} are more than 5, sending consolidated logs in email.".format(length))
+            consolidated_logs = get_consolidate_log_events(log_group_name, events)
+
             print("Generating S3 link for consolidated logs.")
             download_link = get_s3_download_link(consolidated_logs)
-            log_data += f'<pre><br/>There are more similar events. Download consolidated logs: <a href="{download_link}">Link</a></pre><br/>'
-            break
+            log_data += '<pre><br/>There are more similar events found. Download consolidated logs to view details: <a href="' + \
+                download_link + '">Link</a></pre><br/>'
+            text = alarm_table_html + log_data
+            send_email(subject, text)
+            return
         else:
-            print(
-                "Number of matched events are less than 5, sending logs of each event in email.")
+            print("Number of matched events are less than 5, sending logs of each event in email.")
             log_events = get_log_events(msg, log_group_name, log_stream_name)
             print("Generating S3 link for event: {}".format(i))
             download_link = get_s3_download_link(log_events['events'])
