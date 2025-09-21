@@ -286,17 +286,11 @@ def prepare_email_content_for_error_logs(response, message, log_group_name):
         raw_message = event['message']
         pod_name, namespace = "N/A", "N/A"
 
-        try:
-            msg_json = json.loads(raw_message)
-            pod_name = msg_json.get("containerName", "N/A")
-            namespace = msg_json.get("containerNamespace", "N/A")
-        except Exception:
-            pod_match = re.search(r'pod[=: ]+([\w-]+)', raw_message)
-            ns_match = re.search(r'namespace[=: ]+([\w-]+)', raw_message)
-            if pod_match:
-                pod_name = pod_match.group(1)
-            if ns_match:
-                namespace = ns_match.group(1)
+        msg = json.loads(raw_message)
+        pod_name = msg.get("containerName")
+        namespace = msg.get("containerNamespace")
+
+        print("Pod Name is: " + pod_name + "Namespace is: " + namespace )
 
         log_data += f'<pre><b>Log Group</b>: <a href="{console_url}/log-events/{log_stream_name}">{log_group_name}</a></pre>'
         log_data += f'<pre><b>Log Stream:</b> {log_stream_name}</pre>'
@@ -341,38 +335,40 @@ def check_events_for_los_stmts(events):
 # ---------------------------
 # Restart EKS Deployments
 # ---------------------------
-def restart_containers_eks(matched_log_events):
-    restarted_deployments = []
-    kube_api_url = "https://ucc-dm.est.k8s.dev.dm.aws.spctrm.net"
-    api_token = get_api_token(secret_name, region)
-    headers = {"Authorization": f"Bearer {api_token}", "Content-Type": "application/strategic-merge-patch+json"}
+def api_call(namespace, pod_name):
+    API_TOKEN = get_api_token(secret_name, region)
+    url = "https://ucc-dm.est.k8s.dev.dm.aws.spctrm.net/k8s-utils/v1/pods/delete"
+    request_data = {
+        "name": pod_name,
+        "namespace": namespace
+    }
+    json_data = json.dumps(request_data).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {API_TOKEN}"
+    }
 
-    for event in matched_log_events:
-        container_name = event.get('env', {}).get('containerName')
-        if container_name in eks_deployment_mapping:
-            dep_info = eks_deployment_mapping[container_name]
-            patch_body = {"spec": {"template": {"metadata": {"annotations": {"restartedAt": str(datetime.utcnow())}}}}}
-            url = f"{kube_api_url}/apis/apps/v1/namespaces/{dep_info['namespace']}/deployments/{dep_info['deployment']}"
-            req = urllib.request.Request(url, method='PATCH', headers=headers, data=json.dumps(patch_body).encode())
-            try:
-                with urllib.request.urlopen(req) as resp:
-                    print(f"Deployment {dep_info['deployment']} restarted: {resp.read().decode()}")
-                    restarted_deployments.append(container_name)
-            except urllib.error.HTTPError as e:
-                print(f"Error restarting deployment {dep_info['deployment']}: {e.read().decode()}")
-
-    return restarted_deployments
+    req = urllib.request.Request(url, data=json_data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req) as response:
+            status_code = response.getcode()
+            if status_code == 200:
+                print(f"Pod '{pod_name}' deleted successfully in namespace '{namespace}'")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            print(f"Pod '{pod_name}' already deleted in namespace '{namespace}'")
 
 # ---------------------------
 # Fetch API_TOKEN from Secrets Manager
 # ---------------------------
 def get_api_token(secret_name, region):
+    secrets_client = boto3.client('secretsmanager', region_name=region)
     try:
-        response = ssm.get_secret_value(SecretId=secret_name)
+        response = secrets_client.get_secret_value(SecretId=secret_name)
         secret = json.loads(response['SecretString'])
         return secret['API_TOKEN']
     except Exception as e:
-        print(f"Error retrieving API_TOKEN from secrets manager: {e}")
+        print(f"Error retrieving secret: {e}")
         return None
 
 # ---------------------------
