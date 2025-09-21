@@ -15,7 +15,6 @@ import html
 cloudwatch_logs = boto3.client('logs')
 cloudwatch = boto3.client('cloudwatch')
 ssm = boto3.client('secretsmanager')
-s3_client = boto3.client('s3', region_name="us-east-1")
 ses = None
 
 # ---------------------------
@@ -263,92 +262,59 @@ def get_consolidate_log_events(log_group_name, events):
     return consolidated_log_events
 
 # ---------------------------
-# Upload to S3 and return link
-# ---------------------------
-def get_s3_download_link(response_log_events):
-    
-    length_events = len(response_log_events)
-    with open("/tmp/logs.txt", "w+") as a_file:
-        for log_event in range(length_events):
-            a_file.write(
-                "%s\n" % response_log_events[log_event]['message'])
-
-    with open("/tmp/logs.txt", 'rb') as orig_file:
-        with gzip.open("/tmp/logs.gz", 'wb') as zipped_file:
-            zipped_file.writelines(orig_file)
-
-    file_name = str(uuid.uuid4()) + '.gz'
-    log_file_name = "prod/" + file_name
-    result = s3_client.upload_file(
-        '/tmp/logs.gz', 'ucchub2-app-logs', log_file_name)
-    print("Log file uploaded successfully to S3: {}".format(log_file_name))
-
-    return "https://lo1v82nhf5.execute-api.us-east-1.amazonaws.com/cw/v1/download/" + file_name
-
-# ---------------------------
 # Prepare Email Content for Error Logs (Updated)
 # ---------------------------
 def prepare_email_content_for_error_logs(response, message, log_group_name):
-    high_priority_notification = False
-    events = response['events']
-    subject = f"Details for Alarm - {message['AlarmName']}"
+    raw_events = response.get('events', [])
+    if not raw_events:
+        print("No events found for error logs.")
+        return
+
+    consolidated_events = get_consolidate_log_events(log_group_name, raw_events)
+
+    subject = f"Details for Alarm {message['AlarmName']}"
     alarm_table_html = get_alarm_table(message)
+    
+    aws_region = os.environ.get('AWS_REGION', 'us-east-1')
+    console_url = f'https://{aws_region}.console.aws.amazon.com/cloudwatch/home?region={aws_region}#logsV2:log-groups/log-group/{log_group_name.replace("/", "$252F")}'
+    style = "<style> pre {color: red; font-family: arial, sans-serif; font-size: 11px;} </style>"
+    
+    log_data = f'<br/><b><u>Log Details (Consolidated, showing max 5 events):</u></b><br/><br/>{style}'
 
-    console_url = f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#logsV2:log-groups/log-group/{log_group_name.replace('/', '$252F')}"
+    for idx, event in enumerate(consolidated_events[:5]):
+        log_stream_name = event['logStreamName']
+        raw_message = event['message']
+        pod_name, namespace = "N/A", "N/A"
 
-    style = "<style> pre {color: black;font-family: monospace;font-size: 12px;white-space: pre-wrap;} </style>"
-    log_data = '<br/><b><u>Log Details:</u></b><br/>' + style
-
-    # Limit logs shown directly in email
-    max_logs_in_email = 20
-    logs_to_show = events[:max_logs_in_email]
-
-    cleaned_logs = []
-    for event in logs_to_show:
         try:
-            msg = json.loads(event['message'])
-            if isinstance(msg, dict):
-                # Keep only useful parts
-                filtered = {
-                    "timestamp": msg.get("ts", event.get("timestamp")),
-                    "level": msg.get("logLevel"),
-                    "message": msg.get("logMessage", msg)
-                }
-                cleaned_logs.append(filtered)
-            else:
-                cleaned_logs.append({"message": msg})
+            msg_json = json.loads(raw_message)
+            pod_name = msg_json.get("containerName", "N/A")
+            namespace = msg_json.get("containerNamespace", "N/A")
         except Exception:
-            cleaned_logs.append({"message": event['message']})
+            pod_match = re.search(r'pod[=: ]+([\w-]+)', raw_message)
+            ns_match = re.search(r'namespace[=: ]+([\w-]+)', raw_message)
+            if pod_match:
+                pod_name = pod_match.group(1)
+            if ns_match:
+                namespace = ns_match.group(1)
 
-    pretty_logs = json.dumps(cleaned_logs, indent=4, ensure_ascii=False)
-    log_data += f"<pre>{html.escape(pretty_logs)}</pre>"
+        log_data += f'<pre><b>Log Group</b>: <a href="{console_url}/log-events/{log_stream_name}">{log_group_name}</a></pre>'
+        log_data += f'<pre><b>Log Stream:</b> {log_stream_name}</pre>'
+        log_data += f'<pre><b>K8s Namespace:</b> {namespace}</pre>'
+        log_data += f'<pre><b>K8s Pod:</b> {pod_name}</pre>'
+        log_data += f'<pre><b>Log Event:</b> {raw_message}</pre><br/>'
 
-    # If too many logs, upload all to S3 and include a link
-    if len(events) > max_logs_in_email:
-        consolidated_logs = get_consolidate_log_events(log_group_name, events)
-        download_link = get_s3_download_link(consolidated_logs)
-        log_data += f'<br/><b>More logs available:</b> <a href="{download_link}">Download Full Log File</a>'
+        if pod_name != "N/A" and namespace != "N/A":
+            print(f"Calling API for pod: {pod_name}, namespace: {namespace}")
+            api_call(namespace, pod_name)
 
-    restarted_log_data = ""
-    if is_container_restart_enabled.lower() == "true" and message['AlarmName'] in approved_alarms_list:
-        high_priority_notification, container_restart_log_events = check_events_for_los_stmts(events)
-        if len(container_restart_log_events) >= int(container_restart_log_stmts_count):
-            restarted_container_ids = restart_containers_eks(container_restart_log_events)
-            if restarted_container_ids:
-                restarted_log_data += "<br/><b>Restarted Containers:</b><ol>"
-                for container_id in restarted_container_ids:
-                    restarted_log_data += f"<li>{container_id}</li>"
-                restarted_log_data += "</ol>"
+    # If more events exist, mention in email
+    if len(consolidated_events) > 5:
+        log_data += f"<br/><i>Only first 5 events shown. Total events: {len(consolidated_events)}</i><br/>"
 
-    # Final email body
-    text = alarm_table_html + restarted_log_data + log_data
-    text += f"<br><br><u><b>Source Identifier:</b></u> {log_stream}"
-
-    if high_priority_notification:
-        subject = f"{high_priority_prefix_text}: {subject}"
-
+    # Send mail with both alarm details and limited log events
+    text = alarm_table_html + log_data
     send_email(subject, text)
-    print("Email Sent.")
 
 # ---------------------------
 # Check Log Events for Restart/High Priority
@@ -430,20 +396,33 @@ def reset_cw_alarm_state(alarm_name):
 # ---------------------------
 # SES Email
 # ---------------------------
-def send_email(subject, html_content):
+def send_email(subject, text):
     global ses
+    global email_dist_list
+
     if ses is None:
         ses = boto3.client('ses', region_name=region)
     try:
-        ses.send_email(
+        response_ses = ses.send_email(
             Source=source_email,
-            Destination={'BccAddresses': email_dist_list},
-            Message={'Subject': {'Data': subject}, 'Body': {'Html': {'Data': html_content}}}
+            Destination={
+                'BccAddresses': email_dist_list
+            },
+            Message={
+                'Subject': {
+                    'Data': subject
+                },
+                'Body': {
+                    'Html': {
+                        'Data': text
+                    }
+                }
+            }
         )
-        print("Email sent successfully")
-    except Exception as e:
-        print(f"Error sending email: {e}")
 
+        print("Response from SES: {}".format(json.dumps(response_ses)))
+    except Exception as e:
+        print("[#ERROR#]: Error occurred while Sending Email: {}".format(str(e)))
 # ---------------------------
 # Alarm Table HTML
 # ---------------------------
