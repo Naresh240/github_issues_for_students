@@ -7,63 +7,13 @@ aws logs describe-metric-filters --log-group-name "/ucc/eks/dm-campaign-process-
 aws cloudwatch put-metric-alarm --alarm-name "InfoLogAlarm" --alarm-description "Alarm when INFO logs appear in dm-campaign-process-manager" --metric-name "InfoLogCount" --namespace "UccDmApp" --statistic Sum --period 60 --threshold 0 --comparison-operator GreaterThanThreshold --evaluation-periods 1 --treat-missing-data notBreaching --alarm-actions test-sns-topic
 
 
-def prepare_email_content_for_error_logs(response, message, log_group_name):
-    events = response['events']
-    subject = f"Details for Alarm - {message['AlarmName']}"
-    alarm_table_html = get_alarm_table(message)
-
-    console_url = f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#logsV2:log-groups/log-group/{log_group_name.replace('/', '$252F')}"
-
-    style = "<style> pre {color: red;font-family: arial, sans-serif;font-size: 11px;} </style>"
-    log_data = '<br/><b><u>Log Details:</u></b><br/><br/>' + style
-
-    high_priority_notification = False
-    restarted_log_data = ""
-
-    for i, event in enumerate(events):
-        log_stream_name = event['logStreamName']
-        try:
-            msg = json.loads(event['message'])
-        except Exception:
-            msg = {"rawMessage": event['message']}
-
-        log_data += f'<pre><b>Log Group</b>: <a href="{console_url}/log-events/{log_stream_name}">{log_group_name}</a></pre>'
-        log_data += f'<pre><b>Log Stream:</b> {log_stream_name}</pre>'
-        log_data += f'<pre><b>Log Event:</b><br/>{json.dumps(msg, indent=4)}</pre><br/>'
-
-    # Download log option
-    if download_log_option.lower() == "true":
-        if len(events) > 5:
-            consolidated_logs = get_consolidate_log_events(log_group_name, events)
-            download_link = get_s3_download_link(consolidated_logs)
-            log_data += f'<pre><br/>There are more similar events. Download consolidated logs: <a href="{download_link}">Link</a></pre><br/>'
-        else:
-            for i, event in enumerate(events):
-                try:
-                    msg = json.loads(event['message'])
-                except:
-                    msg = {"rawMessage": event['message']}
-                log_events = get_log_events(msg, log_group_name, event['logStreamName'])
-                download_link = get_s3_download_link(log_events['events'])
-                log_data += f'<pre><b>Download logs (event {i+1}):</b> <a href="{download_link}">Link</a></pre><br/>'
-
-    # Container restart logic
-    if is_container_restart_enabled.lower() == "true" and message['AlarmName'] in approved_alarms_list:
-        high_priority_notification, container_restart_log_events = check_events_for_los_stmts(events)
-        if len(container_restart_log_events) >= int(container_restart_log_stmts_count):
-            restarted_container_ids = restart_container(container_restart_log_events)
-            if restarted_container_ids:
-                restarted_log_data += '<br/><b><u>Restarted Containers:</u></b><br/>' + style + '<ol>'
-                for cid in restarted_container_ids:
-                    restarted_log_data += f"<li><b>{cid}</b></li>"
-                restarted_log_data += '</ol>'
-
-    # Final text body
-    text = alarm_table_html + restarted_log_data + log_data
-    text += f"<br><br><br><br><br><u><b>Source Identifier:</b></u> {log_stream}"
-
-    if high_priority_notification:
-        subject = f"{high_priority_prefix_text}: {subject}"
+raw_message = event['Records'][0]['Sns']['Message']
+message = None
+try:
+    message = json.loads(raw_message)
+except Exception as e:
+    print(f"Failed to parse Message as JSON: {e}")
+    message = {"RawMessage": raw_message}
 
     send_email(subject, text)
     print("Email Sent.")
