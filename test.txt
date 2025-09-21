@@ -6,17 +6,83 @@ aws logs describe-metric-filters --log-group-name "/ucc/eks/dm-campaign-process-
 
 aws cloudwatch put-metric-alarm --alarm-name "InfoLogAlarm" --alarm-description "Alarm when INFO logs appear in dm-campaign-process-manager" --metric-name "InfoLogCount" --namespace "UccDmApp" --statistic Sum --period 60 --threshold 0 --comparison-operator GreaterThanThreshold --evaluation-periods 1 --treat-missing-data notBreaching --alarm-actions test-sns-topic
 
-    request_data = {
-    trigger = message['Trigger']
-    
-    namespace = None
-    metric_name = None
 
-    if 'Metrics' in trigger:   # Composite metrics (array style)
-        namespace = trigger['Metrics'][0]['MetricStat']['Metric']['Namespace']
-        metric_name = trigger['Metrics'][0]['MetricStat']['Metric']['MetricName']
-    elif 'MetricName' in trigger and 'Namespace' in trigger:  # Normal case
-        namespace = trigger['Namespace']
-        metric_name = trigger['MetricName']
+# ---------------------------
+# Prepare Email Content for Error Logs (Updated)
+# ---------------------------
+def prepare_email_content_for_error_logs(response, message, log_group_name):
+    high_priority = False
+    events = response['events']
+    subject = 'Details for Alarm - ' + message['AlarmName']
+    alarm_html = get_alarm_table(message)
 
-    print(f"Namespace: {namespace}, MetricName: {metric_name}")
+    style = """
+    <style>
+        pre {
+            color: red;
+            font-family: Consolas, monospace;
+            font-size: 11px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        table {
+            font-family: arial, sans-serif;
+            font-size: 11px;
+            border-collapse: collapse;
+            width: 100%;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            text-align: left;
+            padding: 6px;
+            vertical-align: top;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+    """
+
+    log_html = '<br/><b><u>Log Details:</u></b><br/><br/>' + style
+    log_html += "<table>"
+    log_html += "<tr><th>Pod Name</th><th>Error Message</th></tr>"
+
+    for event in events:
+        log_stream_name = event['logStreamName']
+        try:
+            msg = json.loads(event['message'])
+            pod_name = msg.get("podName", log_stream_name)
+            error_msg = msg.get("logMessage", json.dumps(msg, indent=2))
+        except Exception:
+            pod_name = log_stream_name
+            error_msg = event['message']
+
+        # Escape HTML special chars so JSON/logs don’t break table
+        error_msg = html.escape(error_msg)
+
+        # Wrap logs in <pre> to preserve newlines/formatting
+        error_msg = f"<pre>{error_msg}</pre>"
+
+        log_html += f"<tr><td>{pod_name}</td><td>{error_msg}</td></tr>"
+
+    log_html += "</table><br/>"
+
+    # Container restart logic
+    if is_container_restart_enabled.lower() == "true" and message['AlarmName'] in approved_alarms_list:
+        high_priority, matched_events = check_events_for_los_stmts(events)
+        if len(matched_events) >= int(container_restart_log_stmts_count):
+            restarted_ids = restart_containers_eks(matched_events)
+            restart_html = '<br/><b><u>Restarted Containers (EKS Deployments):</u></b><br/><pre>'
+            if restarted_ids:
+                restart_html += '<ol>'
+                for cid in restarted_ids:
+                    restart_html += f"<li><b>{cid}</b></li>"
+                restart_html += '</ol>'
+            restart_html += '</pre>'
+            log_html = restart_html + log_html
+
+    if high_priority:
+        subject = f"{high_priority_prefix_text}: {subject}"
+
+    send_email(subject, alarm_html + log_html)
+
