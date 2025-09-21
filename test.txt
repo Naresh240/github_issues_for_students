@@ -8,32 +8,55 @@ aws cloudwatch put-metric-alarm --alarm-name "InfoLogAlarm" --alarm-description 
 
 
 def prepare_email_content_for_error_logs(response, message, log_group_name):
+    high_priority_notification = False
     events = response['events']
     subject = f"Details for Alarm - {message['AlarmName']}"
     alarm_table_html = get_alarm_table(message)
 
-    console_url = f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#logsV2:log-groups/log-group/{log_group_name.replace('/', '$252F')}"
+    style = "<style> pre {color: black;font-family: monospace;font-size: 12px;white-space: pre-wrap;} </style>"
+    log_data = '<br/><b><u>Log Details (Consolidated):</u></b><br/>' + style
 
-    style = "<style> pre {color: red;font-family: arial, sans-serif;font-size: 11px;} </style>"
-    log_data = '<br/><b><u>Log Details (Consolidated):</u></b><br/><br/>' + style
+    # ✅ Consolidate logs across all streams/pods
+    consolidated_logs = get_consolidate_log_events(log_group_name, events)
 
-    # collect all messages together
-    consolidated_logs = []
-    for event in events:
+    cleaned_logs = []
+    for event in consolidated_logs:
         try:
             msg = json.loads(event['message'])
-            consolidated_logs.append(msg)
-        except json.JSONDecodeError:
-            consolidated_logs.append(event['message'])
+            if isinstance(msg, dict):
+                # Extract useful info
+                filtered = {
+                    "timestamp": msg.get("ts", event.get("timestamp")),
+                    "level": msg.get("logLevel"),
+                    "message": msg.get("logMessage", msg)
+                }
+                cleaned_logs.append(filtered)
+            else:
+                cleaned_logs.append({"message": msg})
+        except Exception:
+            cleaned_logs.append({"message": event['message']})
 
-    # pretty-print as one block
-    pretty_logs = json.dumps(consolidated_logs, indent=4, ensure_ascii=False)
-    log_data += f'<pre>{html.escape(pretty_logs)}</pre>'
+    # ✅ Pretty print full consolidated logs
+    pretty_logs = json.dumps(cleaned_logs, indent=4, ensure_ascii=False)
+    log_data += f"<pre>{html.escape(pretty_logs)}</pre>"
+
+    restarted_log_data = ""
+    if is_container_restart_enabled.lower() == "true" and message['AlarmName'] in approved_alarms_list:
+        high_priority_notification, container_restart_log_events = check_events_for_los_stmts(events)
+        if len(container_restart_log_events) >= int(container_restart_log_stmts_count):
+            restarted_container_ids = restart_containers_eks(container_restart_log_events)
+            if restarted_container_ids:
+                restarted_log_data += "<br/><b>Restarted Containers:</b><ol>"
+                for container_id in restarted_container_ids:
+                    restarted_log_data += f"<li>{container_id}</li>"
+                restarted_log_data += "</ol>"
 
     # Final email body
-    text = alarm_table_html + log_data
+    text = alarm_table_html + restarted_log_data + log_data
     text += f"<br><br><u><b>Source Identifier:</b></u> {log_stream}"
+
+    if high_priority_notification:
+        subject = f"{high_priority_prefix_text}: {subject}"
 
     send_email(subject, text)
     print("Email Sent.")
-
