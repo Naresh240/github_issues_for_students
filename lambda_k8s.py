@@ -26,14 +26,13 @@ email_dist_list = os.environ['email_dist_list'].split(",")
 source_email = os.environ['source_email_address']
 application_error_metric_ns = os.environ['application_error_metric_namespace'].split(",")
 env = os.environ["environment"]
-is_container_restart_enabled = os.environ.get("is_container_restart_enabled", "false")
-container_restart_log_stmts = os.environ.get("log_stmt_for_container_restart", "")
-container_restart_log_stmts_count = os.environ.get("log_stmt_for_container_restart_max_count", "1")
-container_restart_approved_alarm_names = os.environ.get("container_restart_approved_alarm_names", "")
-high_priority_log_stmts = os.environ.get("high_priority_log_stmts", "")
-high_priority_prefix_text = os.environ.get("high_priority_prefix", "HIGH PRIORITY")
-secret_name = os.environ.get("secret_name", "")
-download_log_option = os.environ.get("download_log_option", "false")
+is_container_restart_enabled = os.environ["is_container_restart_enabled"]
+container_restart_log_stmts = os.environ["log_stmt_for_container_restart"]
+container_restart_log_stmts_count = os.environ["log_stmt_for_container_restart_max_count"]
+container_restart_approved_alarm_names = os.environ["container_restart_approved_alarm_names"]
+high_priority_log_stmts = os.environ["high_priority_log_stmts"]
+high_priority_prefix_text = os.environ["high_priority_prefix"]
+secret_name = os.environ["secret_name"]
 
 log_stream = None
 approved_alarms_list = container_restart_approved_alarm_names.split('|')
@@ -227,11 +226,18 @@ def get_log_events(log_event_message, log_group_name, pod_name, container_name):
 # Consolidate Logs for multiple pods
 # ---------------------------
 def get_consolidate_log_events(log_group_name, events):
-    first_event = json.loads(events[0]['message'])
-    last_event = json.loads(events[-1]['message'])
+    try:
+        first_event = json.loads(events[0]['message'])
+        ts_first_event_obj = datetime.strptime(first_event['ts'], '%Y-%m-%dT%H:%M:%S.%f%z')
+    except (json.JSONDecodeError, KeyError):
+        # fallback: use event timestamp if not JSON
+        ts_first_event_obj = datetime.fromtimestamp(events[0]['timestamp'] / 1000.0)
 
-    ts_first_event_obj = datetime.strptime(first_event['ts'], '%Y-%m-%dT%H:%M:%S.%f%z')
-    ts_last_event_obj = datetime.strptime(last_event['ts'], '%Y-%m-%dT%H:%M:%S.%f%z')
+    try:
+        last_event = json.loads(events[-1]['message'])
+        ts_last_event_obj = datetime.strptime(last_event['ts'], '%Y-%m-%dT%H:%M:%S.%f%z')
+    except (json.JSONDecodeError, KeyError):
+        ts_last_event_obj = datetime.fromtimestamp(events[-1]['timestamp'] / 1000.0)
 
     unique_log_streams = list(set([e['logStreamName'] for e in events]))
 
@@ -260,28 +266,24 @@ def get_consolidate_log_events(log_group_name, events):
 # Upload to S3 and return link
 # ---------------------------
 def get_s3_download_link(response_log_events):
-    try:
-        temp_txt_file = "/tmp/logs.txt"
-        temp_gz_file = "/tmp/logs.gz"
+    
+    length_events = len(response_log_events)
+    with open("/tmp/logs.txt", "w+") as a_file:
+        for log_event in range(length_events):
+            a_file.write(
+                "%s\n" % response_log_events[log_event]['message'])
 
-        with open(temp_txt_file, "w+") as f:
-            for log_event in response_log_events:
-                f.write(f"{log_event['message']}\n")
+    with open("/tmp/logs.txt", 'rb') as orig_file:
+        with gzip.open("/tmp/logs.gz", 'wb') as zipped_file:
+            zipped_file.writelines(orig_file)
 
-        with open(temp_txt_file, 'rb') as orig_file:
-            with gzip.open(temp_gz_file, 'wb') as gz_file:
-                gz_file.writelines(orig_file)
+    file_name = str(uuid.uuid4()) + '.gz'
+    log_file_name = "prod/" + file_name
+    result = s3_client.upload_file(
+        '/tmp/logs.gz', 'ucchub2-app-logs', log_file_name)
+    print("Log file uploaded successfully to S3: {}".format(log_file_name))
 
-        file_name = f"{uuid.uuid4()}.gz"
-        log_file_name = f"{os.environ.get('env', 'prod')}/{file_name}"
-        s3_client.upload_file(temp_gz_file, os.environ['s3_bucket_name'], log_file_name)
-
-        print(f"Log file uploaded successfully to S3: {log_file_name}")
-        return f"https://lo1v82nhf5.execute-api.us-east-1.amazonaws.com/cw/v1/download/{file_name}"
-
-    except Exception as e:
-        print(f"Error in get_s3_download_link: {e}")
-        return None
+    return "https://lo1v82nhf5.execute-api.us-east-1.amazonaws.com/cw/v1/download/" + file_name
 
 # ---------------------------
 # Prepare Email Content for Error Logs (Updated)
@@ -294,63 +296,53 @@ def prepare_email_content_for_error_logs(response, message, log_group_name):
 
     console_url = f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#logsV2:log-groups/log-group/{log_group_name.replace('/', '$252F')}"
 
-    style = "<style> pre {color: red;font-family: arial, sans-serif;font-size: 11px;} </style>"
-    log_data = '<br/><b><u>Log Details:</u></b><br/><br/>' + style
+    style = "<style> pre {color: black;font-family: monospace;font-size: 12px;white-space: pre-wrap;} </style>"
+    log_data = '<br/><b><u>Log Details:</u></b><br/>' + style
 
-    length = len(events)
+    # Limit logs shown directly in email
+    max_logs_in_email = 20
+    logs_to_show = events[:max_logs_in_email]
 
-    for i, event in enumerate(events):
-        log_stream_name = event['logStreamName']
+    cleaned_logs = []
+    for event in logs_to_show:
         try:
             msg = json.loads(event['message'])
-            pretty_msg = json.dumps(msg, indent=4)
-        except json.JSONDecodeError:
-            # fallback if it's plain text log line
-            pretty_msg = event['message']
+            if isinstance(msg, dict):
+                # Keep only useful parts
+                filtered = {
+                    "timestamp": msg.get("ts", event.get("timestamp")),
+                    "level": msg.get("logLevel"),
+                    "message": msg.get("logMessage", msg)
+                }
+                cleaned_logs.append(filtered)
+            else:
+                cleaned_logs.append({"message": msg})
+        except Exception:
+            cleaned_logs.append({"message": event['message']})
 
-        log_data += f'<pre><b>Log Group</b>: <a href="{console_url}/log-events/{log_stream_name}">{log_group_name}</a></pre>'
-        log_data += f'<pre><b>Log Stream:</b> {log_stream_name}</pre>'
-        log_data += f'<pre><b>Log Event:</b><br/>{pretty_msg}</pre><br/>'
+    pretty_logs = json.dumps(cleaned_logs, indent=4, ensure_ascii=False)
+    log_data += f"<pre>{html.escape(pretty_logs)}</pre>"
 
-    # Download log option
-    if os.environ['download_log_option'].lower() == "true":
-        if length > 5:
-            print("Number of matched events: {} are more than 5, sending consolidated logs in email.".format(length))
-            consolidated_logs = get_consolidate_log_events(log_group_name, events)
-
-            print("Generating S3 link for consolidated logs.")
-            download_link = get_s3_download_link(consolidated_logs)
-            log_data += '<pre><br/>There are more similar events found. Download consolidated logs to view details: <a href="' + \
-                download_link + '">Link</a></pre><br/>'
-            text = alarm_table_html + log_data
-            send_email(subject, text)
-            return
-        else:
-            print("Number of matched events are less than 5, sending logs of each event in email.")
-            log_events = get_log_events(msg, log_group_name, log_stream_name)
-            print("Generating S3 link for event: {}".format(i))
-            download_link = get_s3_download_link(log_events['events'])
-            log_data += '<pre><b>Download logs:</b> <a href="' + \
-                download_link + '">Link</a></pre><br/>'
-            log_data += '<pre>-----</pre><br/>'
+    # If too many logs, upload all to S3 and include a link
+    if len(events) > max_logs_in_email:
+        consolidated_logs = get_consolidate_log_events(log_group_name, events)
+        download_link = get_s3_download_link(consolidated_logs)
+        log_data += f'<br/><b>More logs available:</b> <a href="{download_link}">Download Full Log File</a>'
 
     restarted_log_data = ""
-
     if is_container_restart_enabled.lower() == "true" and message['AlarmName'] in approved_alarms_list:
         high_priority_notification, container_restart_log_events = check_events_for_los_stmts(events)
-        print("Received high_priority as: {}".format(high_priority_notification))
-        print(container_restart_log_events)
         if len(container_restart_log_events) >= int(container_restart_log_stmts_count):
             restarted_container_ids = restart_containers_eks(container_restart_log_events)
-            if len(restarted_container_ids) > 0:
-                restarted_log_data += '<ol>'
+            if restarted_container_ids:
+                restarted_log_data += "<br/><b>Restarted Containers:</b><ol>"
                 for container_id in restarted_container_ids:
-                    restarted_log_data += f"<li><b>{container_id}</b></li>"
-                restarted_log_data += '</ol>'
-            restarted_log_data += '</pre>'
-    # Final text body
+                    restarted_log_data += f"<li>{container_id}</li>"
+                restarted_log_data += "</ol>"
+
+    # Final email body
     text = alarm_table_html + restarted_log_data + log_data
-    text += f"<br><br><br><br><br><u><b>Source Identifier:</b></u> {log_stream}"
+    text += f"<br><br><u><b>Source Identifier:</b></u> {log_stream}"
 
     if high_priority_notification:
         subject = f"{high_priority_prefix_text}: {subject}"
