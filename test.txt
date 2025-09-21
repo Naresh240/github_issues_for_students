@@ -7,18 +7,16 @@ aws logs describe-metric-filters --log-group-name "/ucc/eks/dm-campaign-process-
 aws cloudwatch put-metric-alarm --alarm-name "InfoLogAlarm" --alarm-description "Alarm when INFO logs appear in dm-campaign-process-manager" --metric-name "InfoLogCount" --namespace "UccDmApp" --statistic Sum --period 60 --threshold 0 --comparison-operator GreaterThanThreshold --evaluation-periods 1 --treat-missing-data notBreaching --alarm-actions test-sns-topic
 
     request_data = {
-        "gracePeriodSeconds": 0
-    }
-    json_data = json.dumps(request_data).encode("utf-8")
+    trigger = message['Trigger']
+    
+    namespace = None
+    metric_name = None
 
-    # SSL context (disable verify if needed)
-    ctx = ssl.create_default_context()
-    if not verify_ssl:
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+    if 'Metrics' in trigger:   # Composite metrics (array style)
+        namespace = trigger['Metrics'][0]['MetricStat']['Metric']['Namespace']
+        metric_name = trigger['Metrics'][0]['MetricStat']['Metric']['MetricName']
+    elif 'MetricName' in trigger and 'Namespace' in trigger:  # Normal case
+        namespace = trigger['Namespace']
+        metric_name = trigger['MetricName']
 
-    req = urllib.request.Request(url, data=json_data, headers=headers, method="DELETE")
-
-    try:
-        with urllib.request.urlopen(req, context=ctx) as response:
-            status_code = response.getcode()
+    print(f"Namespace: {namespace}, MetricName: {metric_name}")
