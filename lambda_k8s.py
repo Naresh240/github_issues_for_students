@@ -7,6 +7,7 @@ import uuid
 import gzip
 import urllib.request
 import urllib.error
+import html
 
 # ---------------------------
 # AWS Clients
@@ -59,16 +60,19 @@ def lambda_handler(event, context):
     print("Event received: {}".format(json.dumps(event)))
 
     message = json.loads(event['Records'][0]['Sns']['Message'])
+    trigger = message['Trigger']
+
     namespace = None
     metric_name = None
 
-    # Detect metric structure
-    if 'Metrics' in message['Trigger']:
-        namespace = message['Trigger']['Metrics'][0]['MetricStat']['Metric']['Namespace']
-        metric_name = message['Trigger']['Metrics'][0]['MetricStat']['Metric']['MetricName']
-    elif 'Metric' in message['Trigger']:
-        namespace = message['Trigger']['Metric']['Namespace']
-        metric_name = message['Trigger']['Metric']['MetricName']
+    if 'Metrics' in trigger:   # Composite metrics (array style)
+        namespace = trigger['Metrics'][0]['MetricStat']['Metric']['Namespace']
+        metric_name = trigger['Metrics'][0]['MetricStat']['Metric']['MetricName']
+    elif 'MetricName' in trigger and 'Namespace' in trigger:  # Normal case
+        namespace = trigger['Namespace']
+        metric_name = trigger['MetricName']
+
+    print(f"Namespace: {namespace}, MetricName: {metric_name}")
 
     if namespace in application_error_metric_ns:
         response = cloudwatch_logs.describe_metric_filters(
@@ -185,53 +189,99 @@ def prepare_email_content(message, data):
     return html
 
 # ---------------------------
-# Prepare Email Content for Error Logs
+# Generate S3 Download Link
+# ---------------------------
+def get_s3_download_link(log_events):
+    try:
+        key = f"logs/{uuid.uuid4()}.json.gz"
+        compressed = gzip.compress(json.dumps(log_events).encode("utf-8"))
+        
+        s3_client.put_object(
+            Bucket=os.environ['s3_bucket_name'],
+            Key=key,
+            Body=compressed,
+            ContentType="application/json",
+            ContentEncoding="gzip"
+        )
+
+        # Presigned URL (valid for 1 hour)
+        url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': os.environ['s3_bucket_name'], 'Key': key},
+            ExpiresIn=3600
+        )
+        return url
+    except Exception as e:
+        print(f"Error generating S3 download link: {e}")
+        return None
+
+# ---------------------------
+# Prepare Email Content for Error Logs (Updated)
 # ---------------------------
 def prepare_email_content_for_error_logs(response, message, log_group_name):
-    high_priority = False
+    high_priority_notification = False
     events = response['events']
-    subject = 'Details for Alarm - ' + message['AlarmName']
-    alarm_html = get_alarm_table(message)
-    style = "<style> pre {color: red;font-family: arial, sans-serif;font-size: 11px;} </style>"
-    log_html = '<br/><b><u>Log Details:</u></b><br/><br/>' + style
+    subject = f"Details for Alarm - {message['AlarmName']}"
+    alarm_table_html = get_alarm_table(message)
 
     console_url = f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#logsV2:log-groups/log-group/{log_group_name.replace('/', '$252F')}"
 
-    # Table for Pod and Error Message
-    log_html += "<table border='1' style='font-family: arial, sans-serif;font-size:11px;border-collapse:collapse;width:100%;'>"
-    log_html += "<tr><th style='padding:6px;border:1px solid #ddd;'>Pod Name</th><th style='padding:6px;border:1px solid #ddd;'>Error Message</th></tr>"
+    style = "<style> pre {color: red;font-family: arial, sans-serif;font-size: 11px;} </style>"
+    log_data = '<br/><b><u>Log Details:</u></b><br/><br/>' + style
 
-    for event in events:
+    length = len(events)
+
+    for i, event in enumerate(events):
         log_stream_name = event['logStreamName']
-        try:
-            msg = json.loads(event['message'])
-            pod_name = msg.get("podName", log_stream_name)
-            error_msg = msg.get("logMessage", json.dumps(msg))
-        except Exception:
-            pod_name = log_stream_name
-            error_msg = event['message']
+        msg = json.loads(event['message'])
+        log_data += f'<pre><b>Log Group</b>: <a href="{console_url}/log-events/{log_stream_name}">{log_group_name}</a></pre>'
+        log_data += f'<pre><b>Log Stream:</b> {log_stream_name}</pre>'
+        log_data += f'<pre><b>Log Event:</b><br/>{json.dumps(msg, indent=4)}</pre><br/>'
 
-        log_html += f"<tr><td style='padding:6px;border:1px solid #ddd;'>{pod_name}</td><td style='padding:6px;border:1px solid #ddd;'>{error_msg}</td></tr>"
+    # Download log option
+    if os.environ['download_log_option'].lower() == "true":
+        if length > 5:
+            print(
+                "Number of matched events: {} are more than 5, sending consolidated logs in email.".format(length))
+            consolidated_logs = get_consolidate_log_events(
+                log_group_name, events)
+            print("Generating S3 link for consolidated logs.")
+            download_link = get_s3_download_link(consolidated_logs)
+            log_data += f'<pre><br/>There are more similar events. Download consolidated logs: <a href="{download_link}">Link</a></pre><br/>'
+            break
+        else:
+            print(
+                "Number of matched events are less than 5, sending logs of each event in email.")
+            log_events = get_log_events(msg, log_group_name, log_stream_name)
+            print("Generating S3 link for event: {}".format(i))
+            download_link = get_s3_download_link(log_events['events'])
+            log_data += '<pre><b>Download logs:</b> <a href="' + \
+                download_link + '">Link</a></pre><br/>'
+            log_data += '<pre>-----</pre><br/>'
 
-    log_html += "</table><br/>"
+    restarted_log_data = ""
 
     if is_container_restart_enabled.lower() == "true" and message['AlarmName'] in approved_alarms_list:
-        high_priority, matched_events = check_events_for_los_stmts(events)
-        if len(matched_events) >= int(container_restart_log_stmts_count):
-            restarted_ids = restart_containers_eks(matched_events)
-            restart_html = '<br/><b><u>Restarted Containers (EKS Deployments):</u></b><br/>' + style + '<pre>'
-            if restarted_ids:
-                restart_html += '<ol>'
-                for cid in restarted_ids:
-                    restart_html += f"<li><b>{cid}</b></li>"
-                restart_html += '</ol>'
-            restart_html += '</pre>'
-            log_html = restart_html + log_html
+        high_priority_notification, container_restart_log_events = check_events_for_los_stmts(events)
+        print("Received high_priority as: {}".format(high_priority_notification))
+        print(container_restart_log_events)
+        if len(container_restart_log_events) >= int(container_restart_log_stmts_count):
+            restarted_container_ids = restart_containers_eks(container_restart_log_events)
+            if len(restarted_container_ids) > 0:
+                restarted_log_data += '<ol>'
+                for container_id in restarted_container_ids:
+                    restarted_log_data += f"<li><b>{container_id}</b></li>"
+                restarted_log_data += '</ol>'
+            restarted_log_data += '</pre>'
+    # Final text body
+    text = alarm_table_html + restarted_log_data + log_data
+    text += f"<br><br><br><br><br><u><b>Source Identifier:</b></u> {log_stream}"
 
-    if high_priority:
+    if high_priority_notification:
         subject = f"{high_priority_prefix_text}: {subject}"
 
-    send_email(subject, alarm_html + log_html)
+    send_email(subject, text)
+    print("Email Sent.")
 
 # ---------------------------
 # Check Log Events for Restart/High Priority
