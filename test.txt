@@ -7,39 +7,79 @@ aws logs describe-metric-filters --log-group-name "/ucc/eks/dm-campaign-process-
 aws cloudwatch put-metric-alarm --alarm-name "InfoLogAlarm" --alarm-description "Alarm when INFO logs appear in dm-campaign-process-manager" --metric-name "InfoLogCount" --namespace "UccDmApp" --statistic Sum --period 60 --threshold 0 --comparison-operator GreaterThanThreshold --evaluation-periods 1 --treat-missing-data notBreaching --alarm-actions test-sns-topic
 
 
-def prepare_email_content_for_error_logs(response, message, log_group_name):
-    events = response.get('events', [])
-    subject = f"Details for Alarm {message['AlarmName']}"
+def prepare_email_content_for_error_logs(response, message, log_group_name, max_logs=5):
+    events = response.get("events", [])
+    length = len(events)
+
+    subject = f"Details for Alarm - {message['AlarmName']}"
     alarm_table_html = get_alarm_table(message)
-    aws_region = os.environ.get('AWS_REGION', 'us-east-1')
-    console_url = f'https://{aws_region}.console.aws.amazon.com/cloudwatch/home?region={aws_region}#logsV2:log-groups/log-group/{log_group_name.replace("/", "$252F")}'
-    style = "<style> pre {color: red; font-family: arial, sans-serif; font-size: 11px;} </style>"
-    log_data = f'<br/><b><u>Log Details:</u></b><br/><br/>{style}'
-    for event in events:
-        log_stream_name = event['logStreamName']
-        raw_message = event['message']
-        pod_name, namespace = "N/A", "N/A"
+
+    aws_region = os.environ.get("AWS_REGION", "us-east-1")
+    console_url = f"https://{aws_region}.console.aws.amazon.com/cloudwatch/home?region={aws_region}#logsV2:log-groups/log-group/{log_group_name.replace('/', '$252F')}"
+
+    style = "<style> pre {color: red; font-family: arial, sans-serif; font-size: 13px;} </style>"
+    log_data = f"<br/><b>Log Details:</b><br/><br/>{style}"
+
+    # --- Show only up to max_logs logs ---
+    count = 0
+    for i, event in enumerate(events):
+        if count >= max_logs:
+            break
+
+        log_stream_name = event["logStreamName"]
+        raw_message = event["message"]
+        pod_name, namespace = None, None
+
         try:
-            namespace = raw_message[containerNamespace]
-            pod_name  = raw_message[containerName]
-            print(f"pod_name: {pod_name}, namespace: {namespace}")
+            msg = json.loads(raw_message)
+            pod_name = (
+                msg.get("kubernetes", {}).get("container_name")
+                or msg.get("containerName")
+                or msg.get("env", {}).get("containerName")
+                or msg.get("pod")
+            )
+            namespace = (
+                msg.get("kubernetes", {}).get("namespace_name")
+                or msg.get("containerNamespace")
+                or msg.get("env", {}).get("containerNamespace")
+                or msg.get("namespace")
+            )
         except Exception:
             msg = raw_message
-            pod_match = re.search(r'pod[=: ]+([\w-]+)', raw_message)
-            ns_match = re.search(r'namespace[=: ]+([\w-]+)', raw_message)
+            pod_match = re.search(r"pod[:= ]([^\s]+)", raw_message)
+            ns_match = re.search(r"namespace[:= ]([^\s]+)", raw_message)
             if pod_match:
                 pod_name = pod_match.group(1)
             if ns_match:
                 namespace = ns_match.group(1)
-        log_data += f'<pre><b>Log Group</b>: <a href="{console_url}/log-events/{log_stream_name}">{log_group_name}</a></pre>'
-        log_data += f'<pre><b>Log Stream:</b> {log_stream_name}</pre>'
-        log_data += f'<pre><b>K8s Namespace:</b> {namespace}</pre>'
-        log_data += f'<pre><b>K8s Pod: </b> {pod_name}</pre>'
-        log_data += f'<pre><b>Log Event:</b> {json.dumps(msg, indent=4) if isinstance(msg, dict) else msg}</pre><br/>'
 
-        # Call API for pod restart
-        if pod_name != "N/A" and namespace != "N/A":
-            print(f"Calling API for pod: {pod_name}, namespace: {namespace}")
-            api_call(namespace, pod_name)
+        # Skip logs with missing pod/namespace
+        if not pod_name or not namespace:
+            continue
+
+        log_data += f'<pre><b>Log Group</b>: <a href="{console_url}/log-events/{log_stream_name}">{log_group_name}</a></pre>'
+        log_data += f"<pre><b>Log Stream</b>: {log_stream_name}</pre>"
+        log_data += f"<pre><b>Namespace</b>: {namespace}</pre>"
+        log_data += f"<pre><b>Pod</b>: {pod_name}</pre>"
+        log_data += f"<pre><b>Message</b>: {json.dumps(msg, indent=2) if isinstance(msg, dict) else msg}</pre><br/>"
+
+        # Optionally restart pod
+        api_call(namespace, pod_name)
+        count += 1
+
+    # --- If more logs exist and option is enabled, add consolidated logs ---
+    if os.environ.get("download_log_option", "false").lower() == "true" and length > max_logs:
+        print(
+            f"Number of matched events: {length} are more than {max_logs}, sending consolidated logs in email."
+        )
+        consolidated_logs = get_consolidated_log_events(log_group_name, events)
+
+        for event in consolidated_logs[:50]:  # cap consolidated logs (optional)
+            log_stream_name = event["logStreamName"]
+            msg = json.loads(event["message"])
+
+            log_data += f'<pre><b>Consolidated Log Group</b>: <a href="{console_url}/log-events/{log_stream_name}">{log_group_name}</a></pre>'
+            log_data += f"<pre><b>Consolidated Log Stream</b>: {log_stream_name}</pre>"
+            log_data += f"<pre><b>Consolidated Log Event</b>:<br/>{json.dumps(msg, indent=4)}</pre><br/>"
 
     send_email(subject, alarm_table_html + log_data)
