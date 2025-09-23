@@ -9,6 +9,11 @@ aws cloudwatch put-metric-alarm --alarm-name "InfoLogAlarm" --alarm-description 
 
 
 
+import os
+import json
+import re
+import html
+
 def prepare_email_content_for_error_logs(response, message, log_group_name, max_logs=5):
     events = response.get("events", [])
     length = len(events)
@@ -18,14 +23,14 @@ def prepare_email_content_for_error_logs(response, message, log_group_name, max_
 
     aws_region = os.environ.get("AWS_REGION", "us-east-1")
     console_url = (
-        f"https://{aws_region}.console.aws.amazon.com/cloudwatch/home?region={aws_region}"
-        f"#logsV2:log-groups/log-group/{log_group_name.replace('/', '$252F')}"
+        f"https://{aws_region}.console.aws.amazon.com/cloudwatch/home?"
+        f"region={aws_region}#logsV2:log-groups/log-group/{log_group_name.replace('/', '$252F')}"
     )
 
     style = "<style> pre {color: red; font-family: arial, sans-serif; font-size: 13px;} </style>"
     log_data = f"<br/><b>Log Details:</b><br/><br/>{style}"
 
-    # --- Show only up to max_logs logs in detail ---
+    # --- Show only up to max_logs logs ---
     count = 0
     for i, event in enumerate(events):
         if count >= max_logs:
@@ -35,7 +40,6 @@ def prepare_email_content_for_error_logs(response, message, log_group_name, max_
         raw_message = event["message"]
         pod_name, namespace = None, None
 
-        # --- Try parsing JSON safely ---
         try:
             msg = json.loads(raw_message)
             pod_name = (
@@ -50,9 +54,8 @@ def prepare_email_content_for_error_logs(response, message, log_group_name, max_
                 or msg.get("env", {}).get("containerNamespace")
                 or msg.get("namespace")
             )
-        except (json.JSONDecodeError, TypeError):
+        except Exception:
             msg = raw_message
-            # fallback regex
             pod_match = re.search(r"pod[:= ]([^\s]+)", raw_message)
             ns_match = re.search(r"namespace[:= ]([^\s]+)", raw_message)
             if pod_match:
@@ -60,13 +63,11 @@ def prepare_email_content_for_error_logs(response, message, log_group_name, max_
             if ns_match:
                 namespace = ns_match.group(1)
 
-        # --- Skip logs with missing pod/namespace ---
+        # Skip logs with missing pod/namespace
         if not pod_name or not namespace:
             continue
 
-        log_data += (
-            f'<pre><b>Log Group</b>: <a href="{console_url}/log-events/{log_stream_name}">{log_group_name}</a></pre>'
-        )
+        log_data += f'<pre><b>Log Group</b>: <a href="{console_url}/log-events/{log_stream_name}">{log_group_name}</a></pre>'
         log_data += f"<pre><b>Log Stream</b>: {log_stream_name}</pre>"
         log_data += f"<pre><b>Namespace</b>: {namespace}</pre>"
         log_data += f"<pre><b>Pod</b>: {pod_name}</pre>"
@@ -76,7 +77,7 @@ def prepare_email_content_for_error_logs(response, message, log_group_name, max_
         api_call(namespace, pod_name)
         count += 1
 
-    # --- Consolidated logs section ---
+    # --- If more logs exist and option is enabled, add consolidated logs ---
     if os.environ.get("download_log_option", "false").lower() == "true" and length > max_logs:
         print(
             f"Number of matched events: {length} are more than {max_logs}, sending consolidated logs in email."
@@ -91,13 +92,11 @@ def prepare_email_content_for_error_logs(response, message, log_group_name, max_
             raw_message = event["message"]
             try:
                 msg = json.loads(raw_message)
+                merged_msgs.append(json.dumps(msg, indent=2))
             except (json.JSONDecodeError, TypeError):
-                msg = raw_message
-            merged_msgs.append(json.dumps(msg, indent=2) if isinstance(msg, dict) else str(msg))
+                merged_msgs.append(str(raw_message))
 
-        # Add all consolidated logs in one pre block
         log_data += f"<pre>{html.escape(chr(10).join(merged_msgs))}</pre>"
 
-    # --- Send email ---
+    # --- Send final email ---
     send_email(subject, alarm_table_html + log_data)
-
