@@ -1,1 +1,1 @@
-aws logs describe-metric-filters --query 'metricFilters[*].[filterName,metricTransformations[*].metricName,logGroupName]'
+aws logs describe-metric-filters --query 'metricFilters[?metricTransformations[?metricName==`email_DELIVERED`]].logGroupName'
