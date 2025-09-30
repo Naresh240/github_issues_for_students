@@ -1,1 +1,5 @@
-aws logs describe-metric-filters --query 'metricFilters[?metricTransformations[?metricName==`email_DELIVERED`]].logGroupName'
+aws logs put-metric-filter \
+  --log-group-name "/ucc/eks/dm-comm-delivery-response-handler/dev" \
+  --filter-name "dm-cdrm-filter" \
+  --filter-pattern '{ $.logMessage = "Going to add the email record into List for insert into DB" && $.logMessage = "_email.delivered" }' \
+  --metric-transformations metricName=email_DELIVERED,metricNamespace=dm-ucchub-dev,metricValue=1
