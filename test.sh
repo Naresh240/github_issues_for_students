@@ -4,43 +4,41 @@ set -e
 ###############################################
 # VARIABLES
 ###############################################
-base_dir=$1
-artifact_id=$2
-artifact_version=$3
-release=$4
-build_label=$5
-repo_name=$6
-group_id=$7
+base_dir=$1           # Base directory
+artifact_id=$2        # e.g. HOTSCAN_LMT_UAT
+artifact_version=$3   # e.g. 25.4.4.6
+release=$4            # e.g. HOTSCAN_LMT_25.4.4.6
+build_label=$5        # e.g. 25.4.4.6.29
+repo_name=$6          # e.g. mvn-private-local
+group_id=$7           # e.g. com/db/hotscan
 username=$8
 password=$9
 
 artifactory_url="https://artifactory.intranet.db.com/artifactory"
 
 artifact_path="${base_dir}/${artifact_version}.tar.gz"
-pom_file="${base_dir}/${artifact_version}.pom"
+artifact_name=$(basename "$artifact_path")
+
+# XML file instead of POM
+xml_file="${base_dir}/${artifact_id}_${build_label}.xml"
 metadata_path="${base_dir}/maven-metadata.xml"
-script_file="${base_dir}/upload_to_artifactory.sh"
 
 ###############################################
-# FUNCTION: create_pom_file
+# FUNCTION: create_xml_file
 ###############################################
-create_pom_file() {
-  echo "Creating POM file at $pom_file ..."
-  cat > "$pom_file" <<EOF
+create_xml_file() {
+  echo "Creating XML file at $xml_file ..."
+  cat > "$xml_file" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
-<project xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
-                              http://maven.apache.org/xsd/maven-4.0.0.xsd"
-         xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <modelVersion>4.0.0</modelVersion>
+<artifact>
   <groupId>${group_id}</groupId>
   <artifactId>${artifact_id}</artifactId>
-  <version>${artifact_version}</version>
+  <version>${build_label}</version>
   <packaging>tar.gz</packaging>
-  <description>Auto-generated POM for ${artifact_id}</description>
-</project>
+  <description>Auto-generated XML for ${artifact_id}</description>
+</artifact>
 EOF
-  echo "POM file created successfully."
+  echo "XML file created successfully."
 }
 
 ###############################################
@@ -53,6 +51,7 @@ create_metadata_file() {
 <metadata>
   <groupId>${group_id}</groupId>
   <artifactId>${artifact_id}</artifactId>
+  <version>${artifact_version}</version>
   <versioning>
     <latest>${artifact_version}</latest>
     <release>${artifact_version}</release>
@@ -72,19 +71,14 @@ EOF
 upload_to_artifactory() {
   echo "Starting upload to Artifactory..."
 
-  # Maven-compliant path: groupId converted to folder path
-  base_target="${artifactory_url}/${repo_name}/${group_id//.//}/${artifact_id}/${artifact_version}"
-
-  for file in "$artifact_path" "$pom_file" "$metadata_path"; do
+  for file in "$artifact_path" "$xml_file" "$metadata_path"; do
     if [[ -f "$file" ]]; then
       filename=$(basename "$file")
-      target_url="${base_target}/${filename}"
+
+      target_url="${artifactory_url}/${repo_name}/${group_id}/${artifact_id}/${release}/${build_label}/${filename}"
 
       echo "Uploading $filename to $target_url ..."
-      http_status=$(curl -u "$username:$password" -T "$file" \
-        -H "X-Checksum-Deploy: false" \
-        -H "X-Force-Overwrite: true" \
-        -o /dev/null -s -w "%{http_code}" "$target_url")
+      http_status=$(curl -u "$username:$password" -T "$file" "${target_url}?override=1" -o /dev/null -s -w "%{http_code}")
 
       if [[ "$http_status" -ne 200 && "$http_status" -ne 201 ]]; then
         echo "Upload failed for $filename (HTTP $http_status)"
@@ -96,40 +90,17 @@ upload_to_artifactory() {
       echo "File not found: $file — skipping..."
     fi
   done
-
-  # Optional: upload this script itself for traceability
-  if [[ -f "$script_file" ]]; then
-    script_name=$(basename "$script_file")
-    script_target="${base_target}/${script_name}"
-
-    echo "Uploading $script_name to $script_target ..."
-    http_status=$(curl -u "$username:$password" -T "$script_file" \
-      -H "X-Checksum-Deploy: false" \
-      -H "X-Force-Overwrite: true" \
-      -o /dev/null -s -w "%{http_code}" "$script_target")
-
-    if [[ "$http_status" -ne 200 && "$http_status" -ne 201 ]]; then
-      echo "Upload failed for $script_name (HTTP $http_status)"
-    else
-      echo "$script_name uploaded successfully (HTTP $http_status)"
-    fi
-  fi
 }
 
 ###############################################
 # MAIN EXECUTION
 ###############################################
-if [[ $# -lt 9 ]]; then
-  echo "Usage: $0 <base_dir> <artifact_id> <artifact_version> <release> <build_label> <repo_name> <group_id> <username> <password>"
-  exit 1
-fi
-
 if [[ ! -f "$artifact_path" ]]; then
   echo "Error: Artifact $artifact_path does not exist."
   exit 1
 fi
 
-create_pom_file
+create_xml_file
 create_metadata_file
 upload_to_artifactory
 
