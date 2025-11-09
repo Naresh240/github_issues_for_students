@@ -1,9 +1,0 @@
-echo "Commits ahead of remote (if any):"
-CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")
-
-if [ "$CURRENT_BRANCH" = "HEAD" ]; then
-  echo "Detached HEAD — skipping ahead-of-remote check."
-else
-  git fetch origin "$CURRENT_BRANCH" || true
-  git log "origin/$CURRENT_BRANCH"..HEAD --oneline || true
-fi
