@@ -81,7 +81,9 @@ upload_to_artifactory() {
       target_url="${artifactory_url}/${repo_name}/${group_id}/${artifact_id}/${release}/${build_label}/${filename}"
 
       echo "Uploading $filename to $target_url ..."
-      http_status=$(curl -u "$username:$password" -T "$file" "$target_url" -o /dev/null -s -w "%{http_code}")
+      http_status=$(curl -u "$username:$password" \
+        -H "X-Checksum-Deploy: false" \
+        -T "$file" "$target_url" -o /dev/null -s -w "%{http_code}")
 
       if [[ "$http_status" -ne 200 && "$http_status" -ne 201 ]]; then
         echo "Upload failed for $filename (HTTP $http_status)"
@@ -102,7 +104,9 @@ upload_to_artifactory() {
     script_target="${artifactory_url}/${repo_name}/${group_id}/${artifact_id}/${release}/${build_label}/${script_name}"
 
     echo "Uploading $script_name to $script_target ..."
-    http_status=$(curl -u "$username:$password" -T "$script_file" "$script_target" -o /dev/null -s -w "%{http_code}")
+    http_status=$(curl -u "$username:$password" \
+      -H "X-Checksum-Deploy: false" \
+      -T "$script_file" "$script_target" -o /dev/null -s -w "%{http_code}")
 
     if [[ "$http_status" -ne 200 && "$http_status" -ne 201 ]]; then
       echo "Upload failed for $script_name (HTTP $http_status)"
@@ -127,4 +131,4 @@ create_pom_file
 create_metadata_file
 upload_to_artifactory
 
-echo "All files (artifact, POM, metadata, and script) uploaded successfully to Artifactory!"
+echo "✅ All files (artifact, POM, metadata, and script) uploaded successfully to Artifactory — overwrite allowed!"
