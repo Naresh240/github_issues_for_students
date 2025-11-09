@@ -19,10 +19,9 @@ artifactory_url="https://artifactory.intranet.db.com/artifactory"
 artifact_path="${base_dir}/${artifact_version}.tar.gz"
 artifact_name=$(basename "$artifact_path")
 
-artifact_url="${artifactory_url}/${repo_name}/${group_id}/${artifact_id}/${release}/${build_label}/${artifact_name}"
-
 pom_file="${base_dir}/${artifact_id}-${artifact_version}.pom"
 metadata_path="${base_dir}/maven-metadata.xml"
+script_file="${base_dir}/upload_to_artifactory.sh"
 
 ###############################################
 # FUNCTION: create_pom_file
@@ -94,13 +93,31 @@ upload_to_artifactory() {
       echo "File not found: $file — skipping..."
     fi
   done
+
+  ###############################################
+  # Upload this script itself
+  ###############################################
+  if [[ -f "$script_file" ]]; then
+    script_name=$(basename "$script_file")
+    script_target="${artifactory_url}/${repo_name}/${group_id}/${artifact_id}/${release}/${build_label}/${script_name}"
+
+    echo "Uploading $script_name to $script_target ..."
+    http_status=$(curl -u "$username:$password" -T "$script_file" "$script_target" -o /dev/null -s -w "%{http_code}")
+
+    if [[ "$http_status" -ne 200 && "$http_status" -ne 201 ]]; then
+      echo "Upload failed for $script_name (HTTP $http_status)"
+      exit 1
+    else
+      echo "$script_name uploaded successfully (HTTP $http_status)"
+    fi
+  else
+    echo "Script file not found: $script_file — skipping upload."
+  fi
 }
 
 ###############################################
 # MAIN EXECUTION
 ###############################################
-
-# Check if artifact exists
 if [[ ! -f "$artifact_path" ]]; then
   echo "Error: Artifact $artifact_path does not exist."
   exit 1
@@ -110,4 +127,4 @@ create_pom_file
 create_metadata_file
 upload_to_artifactory
 
-echo "All files uploaded successfully to Artifactory!"
+echo "All files (artifact, POM, metadata, and script) uploaded successfully to Artifactory!"
