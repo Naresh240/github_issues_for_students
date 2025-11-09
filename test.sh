@@ -19,7 +19,6 @@ artifactory_url="https://artifactory.intranet.db.com/artifactory"
 artifact_path="${base_dir}/${artifact_version}.tar.gz"
 pom_file="${base_dir}/${artifact_version}.pom"
 metadata_path="${base_dir}/maven-metadata.xml"
-script_file="${base_dir}/upload_to_artifactory.sh"
 
 ###############################################
 # FUNCTION: create_pom_file
@@ -73,12 +72,14 @@ upload_to_artifactory() {
   echo "Starting upload to Artifactory..."
 
   # Maven-compliant path: groupId converted to folder path
-  base_target="${artifactory_url}/${repo_name}/${group_id//.//}/${artifact_id}/${release}/${build_label}/"
+  base_release_target="${artifactory_url}/${repo_name}/${group_id//.//}/${artifact_id}/${release}"
+  build_target="${base_release_target}/${build_label}"
 
-  for file in "$artifact_path" "$pom_file" "$metadata_path"; do
+  # Upload tar.gz and pom under build_label folder
+  for file in "$artifact_path" "$pom_file"; do
     if [[ -f "$file" ]]; then
       filename=$(basename "$file")
-      target_url="${base_target}/${filename}"
+      target_url="${build_target}/${filename}"
 
       echo "Uploading $filename to $target_url ..."
       http_status=$(curl -u "$username:$password" -T "$file" \
@@ -97,21 +98,19 @@ upload_to_artifactory() {
     fi
   done
 
-  # Optional: upload this script itself for traceability
-  if [[ -f "$script_file" ]]; then
-    script_name=$(basename "$script_file")
-    script_target="${base_target}/${script_name}"
-
-    echo "Uploading $script_name to $script_target ..."
-    http_status=$(curl -u "$username:$password" -T "$script_file" \
+  # Upload maven-metadata.xml at release level (one folder above build_label)
+  if [[ -f "$metadata_path" ]]; then
+    echo "Uploading maven-metadata.xml to $base_release_target ..."
+    http_status=$(curl -u "$username:$password" -T "$metadata_path" \
       -H "X-Checksum-Deploy: false" \
       -H "X-Force-Overwrite: true" \
-      -o /dev/null -s -w "%{http_code}" "$script_target")
+      -o /dev/null -s -w "%{http_code}" "${base_release_target}/maven-metadata.xml")
 
     if [[ "$http_status" -ne 200 && "$http_status" -ne 201 ]]; then
-      echo "Upload failed for $script_name (HTTP $http_status)"
+      echo "Upload failed for maven-metadata.xml (HTTP $http_status)"
+      exit 1
     else
-      echo "$script_name uploaded successfully (HTTP $http_status)"
+      echo "maven-metadata.xml uploaded successfully (HTTP $http_status)"
     fi
   fi
 }
@@ -133,4 +132,4 @@ create_pom_file
 create_metadata_file
 upload_to_artifactory
 
-echo "All files uploaded successfully to Artifactory!"
+echo "✅ All files uploaded successfully to Artifactory!"
