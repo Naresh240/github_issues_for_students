@@ -53,10 +53,10 @@ create_metadata_file() {
   <groupId>${group_id}</groupId>
   <artifactId>${artifact_id}</artifactId>
   <versioning>
-    <latest>${artifact_version}</latest>
-    <release>${artifact_version}</release>
+    <latest>${build_label}</latest>
+    <release>${build_label}</release>
     <versions>
-      <version>${artifact_version}</version>
+      <version>${build_label}</version>
     </versions>
     <lastUpdated>$(date +"%Y%m%d%H%M%S")</lastUpdated>
   </versioning>
