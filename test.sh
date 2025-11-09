@@ -17,9 +17,7 @@ password=$9
 artifactory_url="https://artifactory.intranet.db.com/artifactory"
 
 artifact_path="${base_dir}/${artifact_version}.tar.gz"
-artifact_name=$(basename "$artifact_path")
-
-pom_file="${base_dir}/${artifact_id}-${artifact_version}.pom"
+pom_file="${base_dir}/${artifact_version}.pom"
 metadata_path="${base_dir}/maven-metadata.xml"
 script_file="${base_dir}/upload_to_artifactory.sh"
 
@@ -55,7 +53,6 @@ create_metadata_file() {
 <metadata>
   <groupId>${group_id}</groupId>
   <artifactId>${artifact_id}</artifactId>
-  <version>${artifact_version}</version>
   <versioning>
     <latest>${artifact_version}</latest>
     <release>${artifact_version}</release>
@@ -75,15 +72,19 @@ EOF
 upload_to_artifactory() {
   echo "Starting upload to Artifactory..."
 
+  # Maven-compliant path: groupId converted to folder path
+  base_target="${artifactory_url}/${repo_name}/${group_id//.//}/${artifact_id}/${artifact_version}"
+
   for file in "$artifact_path" "$pom_file" "$metadata_path"; do
     if [[ -f "$file" ]]; then
       filename=$(basename "$file")
-      target_url="${artifactory_url}/${repo_name}/${group_id}/${artifact_id}/${release}/${build_label}/${filename}"
+      target_url="${base_target}/${filename}"
 
       echo "Uploading $filename to $target_url ..."
-      http_status=$(curl -u "$username:$password" \
+      http_status=$(curl -u "$username:$password" -T "$file" \
         -H "X-Checksum-Deploy: false" \
-        -T "$file" "$target_url" -o /dev/null -s -w "%{http_code}")
+        -H "X-Force-Overwrite: true" \
+        -o /dev/null -s -w "%{http_code}" "$target_url")
 
       if [[ "$http_status" -ne 200 && "$http_status" -ne 201 ]]; then
         echo "Upload failed for $filename (HTTP $http_status)"
@@ -96,32 +97,33 @@ upload_to_artifactory() {
     fi
   done
 
-  ###############################################
-  # Upload this script itself
-  ###############################################
+  # Optional: upload this script itself for traceability
   if [[ -f "$script_file" ]]; then
     script_name=$(basename "$script_file")
-    script_target="${artifactory_url}/${repo_name}/${group_id}/${artifact_id}/${release}/${build_label}/${script_name}"
+    script_target="${base_target}/${script_name}"
 
     echo "Uploading $script_name to $script_target ..."
-    http_status=$(curl -u "$username:$password" \
+    http_status=$(curl -u "$username:$password" -T "$script_file" \
       -H "X-Checksum-Deploy: false" \
-      -T "$script_file" "$script_target" -o /dev/null -s -w "%{http_code}")
+      -H "X-Force-Overwrite: true" \
+      -o /dev/null -s -w "%{http_code}" "$script_target")
 
     if [[ "$http_status" -ne 200 && "$http_status" -ne 201 ]]; then
       echo "Upload failed for $script_name (HTTP $http_status)"
-      exit 1
     else
       echo "$script_name uploaded successfully (HTTP $http_status)"
     fi
-  else
-    echo "Script file not found: $script_file — skipping upload."
   fi
 }
 
 ###############################################
 # MAIN EXECUTION
 ###############################################
+if [[ $# -lt 9 ]]; then
+  echo "Usage: $0 <base_dir> <artifact_id> <artifact_version> <release> <build_label> <repo_name> <group_id> <username> <password>"
+  exit 1
+fi
+
 if [[ ! -f "$artifact_path" ]]; then
   echo "Error: Artifact $artifact_path does not exist."
   exit 1
@@ -131,4 +133,4 @@ create_pom_file
 create_metadata_file
 upload_to_artifactory
 
-echo "✅ All files (artifact, POM, metadata, and script) uploaded successfully to Artifactory — overwrite allowed!"
+echo "All files uploaded successfully to Artifactory!"
